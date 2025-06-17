@@ -10,10 +10,10 @@ from telegram.ext import (
 )
 
 # === 配置 ===
-ETHERSCAN_API_KEY = os.environ.get("ETHERSCAN_API_KEY")
-BSCSCAN_API_KEY = os.environ.get("BSCSCAN_API_KEY")
-TRONGRID_API_KEY = os.environ.get("TRONGRID_API_KEY")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ETHERSCAN_API_KEY = "5XHIXCIVCM4J6BM6HHVGJQ8993PB1IU6IU"
+BSCSCAN_API_KEY = "W29NGYSTAZ3G7R4NJKV9ZKHW2CMAVPZ8VN"
+TRONGRID_API_KEY = "013b015f-a888-4f19-92ce-5cc3ff852310"
+BOT_TOKEN = "7260443853:AAGtFbnYNZS0sSzAw10MN4h2j-k7UM5HgGU"
 
 # === 表情图标映射 ===
 TOKEN_EMOJIS = {
@@ -21,6 +21,7 @@ TOKEN_EMOJIS = {
     "TRX": "🔺", "SHIB": "🐶", "BTC": "🟧", "BUSD": "💰", "TUSD": "🔪"
 }
 
+# === 常用 Token 合约地址 ===
 COMMON_TOKENS = {
     "ERC20": [
         {"symbol": "USDT", "contract": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "decimals": 6},
@@ -55,10 +56,8 @@ WELCOME_TEXT = (
     "👋 *欢迎使用多链地址查询机器人！*\n\n"
     "📌 功能说明：\n"
     "- 输入地址，自动识别链类型\n"
-    "- 查询 TRC20 / ERC20 / BEP20 地址\n"
-    "- 展示余额（仅显示余额大于 0 的币种）\n"
-    "- 展示最近 15 条交易记录\n"
-    "- 输出美观，操作简便\n\n"
+    "- 查询 TRC20 / ERC20 / BEP20 地址余额和交易记录\n"
+    "- 优先展示余额多的链\n\n"
     "📥 请直接发送地址开始查询吧！"
 )
 
@@ -72,17 +71,18 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chains:
         await update.message.reply_text("⚠️ 请输入有效地址（0x... 或 T... 开头）")
         return
+
     context.user_data['address'] = address
     context.user_data['chains'] = chains
     context.user_data['page'] = {chain: 0 for chain in chains}
+
     if 'ERC20' in chains and 'BEP20' in chains:
         erc = await fetch_evm_balances(address, ETHERSCAN_API_KEY, "https://api.etherscan.io/api", COMMON_TOKENS["ERC20"])
         bep = await fetch_evm_balances(address, BSCSCAN_API_KEY, "https://api.bscscan.com/api", COMMON_TOKENS["BEP20"])
-        erc_total = sum(erc.values())
-        bep_total = sum(bep.values())
-        prefer_chain = "ERC20" if erc_total >= bep_total else "BEP20"
+        prefer_chain = "ERC20" if sum(erc.values()) >= sum(bep.values()) else "BEP20"
     else:
         prefer_chain = chains[0]
+
     context.user_data['current_chain'] = prefer_chain
     await query_and_respond(update, context, prefer_chain, 0)
 
@@ -92,12 +92,9 @@ async def fetch_evm_balances(address, api_key, api_url, token_list):
         for token in token_list:
             try:
                 params = {
-                    "module": "account",
-                    "action": "tokenbalance",
-                    "contractaddress": token["contract"],
-                    "address": address,
-                    "tag": "latest",
-                    "apikey": api_key
+                    "module": "account", "action": "tokenbalance",
+                    "contractaddress": token["contract"], "address": address,
+                    "tag": "latest", "apikey": api_key
                 }
                 async with session.get(api_url, params=params, timeout=10) as resp:
                     data = await resp.json()
@@ -111,30 +108,38 @@ async def fetch_evm_balances(address, api_key, api_url, token_list):
 
 async def query_and_respond(update, context, chain, page, edit=False):
     address = context.user_data['address']
-    if chain == "ERC20":
-        result = await fetch_evm(address, page, ETHERSCAN_API_KEY, "https://api.etherscan.io/api", "ERC20")
-    elif chain == "BEP20":
-        result = await fetch_evm(address, page, BSCSCAN_API_KEY, "https://api.bscscan.com/api", "BEP20")
+    balances = {}
+    txs = []
+    if chain in ["ERC20", "BEP20"]:
+        api_key = ETHERSCAN_API_KEY if chain == "ERC20" else BSCSCAN_API_KEY
+        api_url = "https://api.etherscan.io/api" if chain == "ERC20" else "https://api.bscscan.com/api"
+        token_list = COMMON_TOKENS[chain]
+        balances = await fetch_evm_balances(address, api_key, api_url, token_list)
+        params = {
+            "module": "account", "action": "tokentx", "address": address,
+            "page": page + 1, "offset": 15, "sort": "desc", "apikey": api_key
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, params=params) as resp:
+                data = await resp.json()
+                txs = data.get("result", [])
     else:
-        result = await fetch_trc20(address, page)
-    text, reply_markup = result
-    if edit:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
-    else:
-        await update.message.reply_markdown(text, reply_markup=reply_markup)
+        url = f"https://api.trongrid.io/v1/accounts/{address}/transactions/trc20"
+        params = {"limit": 15, "only_confirmed": "true", "order_by": "block_timestamp,desc"}
+        headers = {"TRON-PRO-API-KEY": TRONGRID_API_KEY}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params) as resp:
+                data = await resp.json()
+                txs = data.get("data", [])
+                for tx in txs:
+                    info = tx.get("token_info", {})
+                    sym = info.get("symbol", "???")
+                    decimals = int(info.get("decimals", 0))
+                    value = int(tx.get("value", 0)) / (10 ** decimals) if decimals else 0
+                    if tx["to"] == address:
+                        balances[sym] = balances.get(sym, 0) + value
 
-async def fetch_evm(address, page, api_key, api_url, chain_label):
-    tx_params = {
-        "module": "account", "action": "tokentx", "address": address,
-        "page": page + 1, "offset": 15, "sort": "desc", "apikey": api_key
-    }
-    token_list = COMMON_TOKENS.get(chain_label, [])
-    balances = await fetch_evm_balances(address, api_key, api_url, token_list)
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url, params=tx_params) as resp:
-            data = await resp.json()
-    txs = data.get("result", [])
-    text = f"*📦 {chain_label} 地址：* `{shorten(address)}`\n\n*💰 余额：*\n"
+    text = f"*📦 {chain} 地址：* `{shorten(address)}`\n\n*💰 余额：*\n"
     found = False
     for sym, amt in sorted(balances.items(), key=lambda x: -x[1]):
         emoji = get_token_emoji(sym)
@@ -142,66 +147,29 @@ async def fetch_evm(address, page, api_key, api_url, chain_label):
         found = True
     if not found:
         text += "_无余额_\n"
+
     text += f"\n🧾 *最近交易记录*（第 {page+1} 页）：\n"
     for tx in txs:
-        sym = tx.get("tokenSymbol", "???")
-        decimals = int(tx.get("tokenDecimal", 0))
+        sym = tx.get("tokenSymbol") or tx.get("token_info", {}).get("symbol", "???")
+        decimals = int(tx.get("tokenDecimal", 0) or tx.get("token_info", {}).get("decimals", 0))
         value = int(tx.get("value", 0)) / (10 ** decimals) if decimals else 0
-        from_addr, to_addr = tx["from"], tx["to"]
-        direction = "📥" if to_addr.lower() == address.lower() else "📤"
+        from_addr, to_addr = tx.get("from"), tx.get("to")
+        direction = "📥" if to_addr and to_addr.lower() == address.lower() else "📤"
         other = from_addr if direction == "📥" else to_addr
         text += f"{direction} `{fmt_amount(value)} {sym}` → `{shorten(other)}`\n"
-    buttons = []
-    if page > 0:
-        buttons.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"{chain_label}:prev"))
-    if len(txs) == 15:
-        buttons.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"{chain_label}:next"))
-    buttons.append(InlineKeyboardButton("🔁 切换链", callback_data="switch"))
-    buttons.append(InlineKeyboardButton("🔍 继续查询", switch_inline_query_current_chat=""))
-    return text, InlineKeyboardMarkup([buttons])
 
-async def fetch_trc20(address, page):
-    url = f"https://api.trongrid.io/v1/accounts/{address}/transactions/trc20"
-    params = {"limit": 15, "only_confirmed": "true", "order_by": "block_timestamp,desc"}
-    headers = {"TRON-PRO-API-KEY": TRONGRID_API_KEY}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params) as resp:
-            data = await resp.json()
-    txs = data.get("data", [])
-    balances = {}
-    for tx in txs:
-        info = tx.get("token_info", {})
-        sym = info.get("symbol", "???")
-        decimals = int(info.get("decimals", 0))
-        value = int(tx.get("value", 0)) / (10 ** decimals) if decimals else 0
-        if tx["to"] == address:
-            balances[sym] = balances.get(sym, 0) + value
-    text = f"*📦 TRC20 地址：* `{shorten(address)}`\n\n*💰 余额：*\n"
-    found = False
-    for sym, amt in sorted(balances.items(), key=lambda x: -x[1]):
-        emoji = get_token_emoji(sym)
-        text += f"{emoji} `{sym}`：{fmt_amount(amt)}\n"
-        found = True
-    if not found:
-        text += "_无余额_\n"
-    text += f"\n🧾 *最近交易记录*（第 {page+1} 页）：\n"
-    for tx in txs:
-        info = tx.get("token_info", {})
-        sym = info.get("symbol", "???")
-        decimals = int(info.get("decimals", 0))
-        value = int(tx.get("value", 0)) / (10 ** decimals) if decimals else 0
-        from_addr, to_addr = tx["from"], tx["to"]
-        direction = "📥" if to_addr == address else "📤"
-        other_party = from_addr if direction == "📥" else to_addr
-        text += f"{direction} `{fmt_amount(value)} {sym}` → `{shorten(other_party)}`\n"
     buttons = []
     if page > 0:
-        buttons.append(InlineKeyboardButton("⬅️ 上一页", callback_data="TRC20:prev"))
+        buttons.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"{chain}:prev"))
     if len(txs) == 15:
-        buttons.append(InlineKeyboardButton("➡️ 下一页", callback_data="TRC20:next"))
+        buttons.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"{chain}:next"))
     buttons.append(InlineKeyboardButton("🔁 切换链", callback_data="switch"))
     buttons.append(InlineKeyboardButton("🔍 继续查询", switch_inline_query_current_chat=""))
-    return text, InlineKeyboardMarkup([buttons])
+
+    if edit:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([buttons]))
+    else:
+        await update.message.reply_markdown(text, reply_markup=InlineKeyboardMarkup([buttons]))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -209,6 +177,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chains = context.user_data.get('chains', [])
     cur_chain = query.data.split(":")[0]
     action = query.data.split(":")[1] if ":" in query.data else ""
+
     if query.data == "switch":
         idx = chains.index(context.user_data.get('current_chain', chains[0]))
         next_chain = chains[(idx + 1) % len(chains)]
