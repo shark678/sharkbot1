@@ -9,7 +9,7 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# === 环境变量配置 ===
+# === 配置 ===
 ETHERSCAN_API_KEY = os.environ.get("ETHERSCAN_API_KEY")
 BSCSCAN_API_KEY = os.environ.get("BSCSCAN_API_KEY")
 TRONGRID_API_KEY = os.environ.get("TRONGRID_API_KEY")
@@ -55,8 +55,10 @@ WELCOME_TEXT = (
     "👋 *欢迎使用多链地址查询机器人！*\n\n"
     "📌 功能说明：\n"
     "- 输入地址，自动识别链类型\n"
-    "- 查询 TRC20 / ERC20 / BEP20 地址余额和交易记录\n"
-    "- 优先展示余额多的链\n\n"
+    "- 查询 TRC20 / ERC20 / BEP20 地址\n"
+    "- 展示余额（仅显示余额大于 0 的币种）\n"
+    "- 展示最近 15 条交易记录\n"
+    "- 输出美观，操作简便\n\n"
     "📥 请直接发送地址开始查询吧！"
 )
 
